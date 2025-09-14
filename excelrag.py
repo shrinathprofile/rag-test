@@ -739,38 +739,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-</xaiArtifact>
-
-### Changes Made
-1. **Chunking Strategy and Parameters**:
-   - Added `CHUNKING_STRATEGIES` list and session state keys for `chunking_strategy`, `chunk_length`, `max_sentences`.
-   - Sidebar UI:
-     - Selectbox for strategy (Fixed-Length or Sentence-Based).
-     - Slider for `chunk_length` (100-1000 chars) or `max_sentences` (1-10), based on strategy.
-   - New functions:
-     - `chunk_text_fixed_length`: Splits text by character count.
-     - `chunk_text_sentence_based`: Splits by sentence count.
-   - Updated `process_pdf_file` to use selected strategy/parameters.
-
-2. **Custom System Prompt**:
-   - Added `DEFAULT_SYSTEM_PROMPT` and `EXAMPLE_PROMPTS`.
-   - Sidebar text area for custom prompt with examples displayed as bullet points.
-   - Stored in `st.session_state[SESSION_KEYS["system_prompt"]]`.
-   - Integrated into `generate_answer` via system message.
-
-3. **Preserved Features**:
-   - PDF extraction with `PyPDF2`.
-   - Pinecone (free tier) for vector storage.
-   - OpenRouter with free models.
-   - Date updated to September 14, 2025, 11:25 AM ACST.
-
-### Requirements.txt
-```text
-streamlit==1.38.0
-openai==1.40.0
-python-dotenv==1.0.0
-structlog==24.2.0
-PyPDF2==3.0.1
-pinecone-client==3.2.2
-sentence-transformers==3.0.1
-torch==2.4.0  # CPU version for Streamlit Cloud
