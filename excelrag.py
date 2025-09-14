@@ -185,7 +185,7 @@ def retrieve_documents(query: str, index, top_k: int = 3) -> List[Dict[str, Any]
 def generate_answer(query: str, documents: List[Dict[str, Any]], llm_client: OpenAI, model: str) -> str:
     """Generate answer using RAG pipeline."""
     context = "\n".join([f"Source: {doc['source']}\nContent: {doc['content']}" for doc in documents])
-    prompt = f"""You are an AI assistant for home care/aged care. Answer the question based on the provided Excel context. If context is insufficient, note limitations.
+    prompt = f"""You are an AI assistant. Answer the question based on the provided Excel context. If context is insufficient, note limitations.
 
 Question: {query}
 Context:
