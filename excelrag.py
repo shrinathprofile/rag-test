@@ -53,9 +53,7 @@ logger = structlog.get_logger("excel_rag_pinecone")
 
 # Free OpenRouter models (based on current free tier, September 2025)
 FREE_OPENROUTER_MODELS = [
-    "deepseek/deepseek-r1:free",  # Strong reasoning
-    "z-ai/glm-4.5-air:free",      # GLM 4.5 Air
-    "meta-llama/llama-3.1-8b-instruct:free"  # Llama 3.1 8B
+    "deepseek/deepseek-chat-v3.1:free"  #
 ]
 
 # Session state keys
