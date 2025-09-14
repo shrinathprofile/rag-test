@@ -1,15 +1,15 @@
-# app.py - Streamlit RAG Application for Excel File Q&A (Pinecone + OpenRouter)
+# app.py - Streamlit RAG Application for PDF File Q&A (Pinecone + OpenRouter)
 # Features:
+# - Upload PDF files, extract text, chunk, embed, index, and query
 # - User-configurable Pinecone API key and index (select/create)
 # - User-configurable OpenRouter API key and free model selection
-# - Upload Excel files, chunk/embed/index/retrieve/generate
 # - Pure Python implementation for simplicity
-# - Fixed OpenAI client model error
-# Requirements: pip install streamlit openai pinecone-client sentence-transformers pandas python-dotenv structlog torch
+# - Author: Grok 4 (xAI) - Updated on September 14, 2025, 11:11 AM ACST
+# Requirements: pip install streamlit openai pinecone-client sentence-transformers PyPDF2 python-dotenv structlog torch
 # Run: streamlit run app.py
 
 import streamlit as st
-import pandas as pd
+import PyPDF2
 import openai
 from openai import OpenAI
 from pinecone import Pinecone, ServerlessSpec
@@ -22,11 +22,12 @@ import json
 from datetime import datetime
 from sentence_transformers import SentenceTransformer
 import torch
+import re
 
 # Set page config as the FIRST Streamlit command
 st.set_page_config(
-    page_title="Excel RAG Q&A Chatbot (Pinecone)",
-    page_icon="📊",
+    page_title="PDF RAG Q&A Chatbot (Pinecone)",
+    page_icon="📄",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -49,11 +50,12 @@ structlog.configure(
     wrapper_class=structlog.stdlib.BoundLogger,
     cache_logger_on_first_use=True,
 )
-logger = structlog.get_logger("excel_rag_pinecone")
+logger = structlog.get_logger("pdf_rag_pinecone")
 
 # Free OpenRouter models (based on current free tier, September 2025)
 FREE_OPENROUTER_MODELS = [
-    "deepseek/deepseek-chat-v3.1:free"  #
+    "deepseek/deepseek-chat-v3.1:free",  # Strong reasoning
+    "openai/gpt-oss-120b:free",      # GLM 4.5 Air
 ]
 
 # Session state keys
@@ -132,27 +134,49 @@ def create_or_select_index(pc, index_name: str, dimension: int = 384):
         st.error(f"Failed to create/select index: {str(e)}")
         st.stop()
 
-def process_excel_file(file) -> List[Dict[str, Any]]:
-    """Extract text from Excel and prepare for indexing."""
+def chunk_text(text: str, max_length: int = 500) -> List[str]:
+    """Chunk text into smaller pieces for indexing."""
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    chunks = []
+    current_chunk = ""
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) <= max_length:
+            current_chunk += " " + sentence
+        else:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+            current_chunk = sentence
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    return chunks
+
+def process_pdf_file(file) -> List[Dict[str, Any]]:
+    """Extract text from PDF and prepare for indexing."""
     try:
-        df = pd.read_excel(file)
+        reader = PyPDF2.PdfReader(file)
+        text = ""
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            text += page_text + " "
+        
+        # Chunk text
+        chunks = chunk_text(text)
         documents = []
         embedding_model = get_embedding_model()
-        for idx, row in df.iterrows():
-            text = " ".join(str(val) for val in row.values if pd.notna(val))
-            if not text.strip():
+        for idx, chunk in enumerate(chunks):
+            if not chunk.strip():
                 continue
-            embedding = embedding_model.encode(text).tolist()
+            embedding = embedding_model.encode(chunk).tolist()
             doc_id = f"doc_{idx}_{file.name}"
             documents.append({
                 "id": doc_id,
                 "values": embedding,
-                "metadata": {"content": text, "source": file.name}
+                "metadata": {"content": chunk, "source": file.name}
             })
         return documents
     except Exception as e:
-        log_event("excel_processing_failed", {"file": file.name, "error": str(e)})
-        st.error(f"Failed to process Excel file {file.name}: {str(e)}")
+        log_event("pdf_processing_failed", {"file": file.name, "error": str(e)})
+        st.error(f"Failed to process PDF file {file.name}: {str(e)}")
         return []
 
 def index_documents(documents: List[Dict[str, Any]], index):
@@ -183,7 +207,7 @@ def retrieve_documents(query: str, index, top_k: int = 3) -> List[Dict[str, Any]
 def generate_answer(query: str, documents: List[Dict[str, Any]], llm_client: OpenAI, model: str) -> str:
     """Generate answer using RAG pipeline."""
     context = "\n".join([f"Source: {doc['source']}\nContent: {doc['content']}" for doc in documents])
-    prompt = f"""You are an AI assistant. Answer the question based on the provided Excel context. If context is insufficient, note limitations.
+    prompt = f"""You are an AI assistant for home care/aged care. Answer the question based on the provided PDF context. If context is insufficient, note limitations.
 
 Question: {query}
 Context:
@@ -193,7 +217,7 @@ Answer professionally and concisely:"""
     
     try:
         response = llm_client.chat.completions.create(
-            model=model,  # Use selected model directly
+            model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=1000
@@ -207,9 +231,9 @@ Answer professionally and concisely:"""
 def main():
     initialize_session_state()
     
-    st.title("📊 Excel RAG Q&A Chatbot (Pinecone + OpenRouter)")
-    st.markdown("Upload Excel files and ask questions. Uses free Pinecone for vector store and free OpenRouter models.")
-    st.info("**Implementation**: Pure Python, free tier Pinecone/OpenRouter. Generated on September 14, 2025, 10:51 AM ACST.")
+    st.title("📄 PDF RAG Q&A Chatbot (Pinecone + OpenRouter)")
+    st.markdown("Upload PDF files and ask questions. Uses free Pinecone for vector store and free OpenRouter models.")
+    st.info("**Implementation**: Pure Python, free tier Pinecone/OpenRouter. Generated on September 14, 2025, 11:11 AM ACST.")
     
     # Sidebar for user configuration
     with st.sidebar:
@@ -219,7 +243,7 @@ def main():
         pinecone_api_key = st.text_input("Pinecone API Key", type="password", help="Get from pinecone.io (free tier)")
         
         # Pinecone Index
-        index_name = st.text_input("Pinecone Index Name", value="excel-rag-index", help="Existing or new index name")
+        index_name = st.text_input("Pinecone Index Name", value="pdf-rag-index", help="Existing or new index name")
         if st.button("Connect to Pinecone"):
             if pinecone_api_key:
                 pc = get_pinecone_client(pinecone_api_key)
@@ -240,10 +264,10 @@ def main():
             st.session_state[SESSION_KEYS["selected_model"]] = selected_model
         
         # File Upload
-        st.header("Upload Excel Files")
+        st.header("Upload PDF Files")
         uploaded_files = st.file_uploader(
-            "Upload Excel files (.xlsx, .xls)",
-            type=["xlsx", "xls"],
+            "Upload PDF files (.pdf)",
+            type=["pdf"],
             accept_multiple_files=True
         )
         
@@ -251,7 +275,7 @@ def main():
             with st.spinner("Processing and indexing..."):
                 index = st.session_state[SESSION_KEYS["pinecone_index"]]
                 for file in uploaded_files:
-                    documents = process_excel_file(file)
+                    documents = process_pdf_file(file)
                     if documents:
                         index_documents(documents, index)
                         st.session_state[SESSION_KEYS["documents"]].extend(documents)
@@ -276,7 +300,7 @@ def main():
             st.markdown(message["content"])
     
     if not st.session_state[SESSION_KEYS["documents"]]:
-        st.warning("Configure Pinecone/OpenRouter and upload Excel files to start querying.")
+        st.warning("Configure Pinecone/OpenRouter and upload PDF files to start querying.")
         return
     
     # Validate configurations
@@ -293,7 +317,7 @@ def main():
     selected_model = st.session_state.get(SESSION_KEYS["selected_model"])
     llm_client = get_openrouter_client(openrouter_api_key)
     
-    if query := st.chat_input("Ask a question about the Excel data..."):
+    if query := st.chat_input("Ask a question about the PDF data..."):
         with st.chat_message("user"):
             st.markdown(query)
         
