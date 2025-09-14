@@ -55,7 +55,8 @@ logger = structlog.get_logger("pdf_rag_pinecone")
 # Free OpenRouter models (based on current free tier, September 2025)
 FREE_OPENROUTER_MODELS = [
     "deepseek/deepseek-chat-v3.1:free",  # Strong reasoning
-    "openai/gpt-oss-120b:free",      # GLM 4.5 Air
+    "openai/gpt-oss-120b:free", 
+    "meta-llama/llama-3.3-8b-instruct:free"# GLM 4.5 Air
 ]
 
 # Session state keys
