@@ -1,6 +1,6 @@
 streamlit
 openai
-pinecone-client
+pinecone
 sentence-transformers
 pandas
 python-dotenv
