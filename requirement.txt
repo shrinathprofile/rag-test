@@ -1,0 +1,8 @@
+streamlit
+openai
+pinecone-client
+sentence-transformers
+pandas
+python-dotenv
+structlog
+torch
