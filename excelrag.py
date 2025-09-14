@@ -4,6 +4,7 @@
 # - User-configurable OpenRouter API key and free model selection
 # - Upload Excel files, chunk/embed/index/retrieve/generate
 # - Pure Python implementation for simplicity
+# - Fixed OpenAI client model error
 # Requirements: pip install streamlit openai pinecone-client sentence-transformers pandas python-dotenv structlog torch
 # Run: streamlit run app.py
 
@@ -50,17 +51,21 @@ structlog.configure(
 )
 logger = structlog.get_logger("excel_rag_pinecone")
 
-# Free OpenRouter models (based on current free tier)
+# Free OpenRouter models (based on current free tier, September 2025)
 FREE_OPENROUTER_MODELS = [
-    "deepseek/deepseek-chat-v3.1:free"  
+    "deepseek/deepseek-r1:free",  # Strong reasoning
+    "z-ai/glm-4.5-air:free",      # GLM 4.5 Air
+    "meta-llama/llama-3.1-8b-instruct:free"  # Llama 3.1 8B
 ]
 
 # Session state keys
 SESSION_KEYS = {
     "messages": "messages",
-    "documents": "documents",  # List of indexed vectors
+    "documents": "documents",
     "upload_status": "upload_status",
-    "pinecone_index": "pinecone_index"
+    "pinecone_index": "pinecone_index",
+    "openrouter_api_key": "openrouter_api_key",
+    "selected_model": "selected_model"
 }
 
 def initialize_session_state():
@@ -69,7 +74,9 @@ def initialize_session_state():
         SESSION_KEYS["messages"]: [],
         SESSION_KEYS["documents"]: [],
         SESSION_KEYS["upload_status"]: None,
-        SESSION_KEYS["pinecone_index"]: None
+        SESSION_KEYS["pinecone_index"]: None,
+        SESSION_KEYS["openrouter_api_key"]: "",
+        SESSION_KEYS["selected_model"]: FREE_OPENROUTER_MODELS[0]
     }
     for key, val in defaults.items():
         st.session_state[key] = st.session_state.get(key, val)
@@ -80,7 +87,7 @@ def log_event(event: str, details: Dict[str, Any]):
 @st.cache_resource
 def get_embedding_model():
     """Load sentence-transformers model (free, local embeddings)."""
-    return SentenceTransformer('all-MiniLM-L6-v2')  # 384 dims, fast on CPU
+    return SentenceTransformer('all-MiniLM-L6-v2')  # 384 dims, CPU-friendly
 
 @st.cache_resource
 def get_pinecone_client(api_key: str):
@@ -88,34 +95,44 @@ def get_pinecone_client(api_key: str):
     if not api_key:
         st.error("Pinecone API key is required.")
         st.stop()
-    pc = Pinecone(api_key=api_key)
-    return pc
+    try:
+        pc = Pinecone(api_key=api_key)
+        return pc
+    except Exception as e:
+        st.error(f"Pinecone connection failed: {str(e)}")
+        st.stop()
 
 @st.cache_resource
-def get_openrouter_client(api_key: str, model: str):
+def get_openrouter_client(api_key: str):
     """Initialize OpenRouter client."""
     if not api_key:
         st.error("OpenRouter API key is required.")
         st.stop()
-    if model not in FREE_OPENROUTER_MODELS:
-        st.error(f"Selected model {model} is not in free tier. Choose from available options.")
+    try:
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        return client
+    except Exception as e:
+        st.error(f"OpenRouter connection failed: {str(e)}")
         st.stop()
-    return OpenAI(
-        api_key=api_key,
-        base_url="https://openrouter.ai/api/v1",
-    )
 
 def create_or_select_index(pc, index_name: str, dimension: int = 384):
     """Create index if not exists, or select existing."""
-    if index_name not in pc.list_indexes().names():
-        pc.create_index(
-            name=index_name,
-            dimension=dimension,
-            metric='cosine',
-            spec=ServerlessSpec(cloud='aws', region='us-east-1')  # Free tier compatible
-        )
-        st.success(f"Created new Pinecone index: {index_name}")
-    return pc.Index(index_name)
+    try:
+        if index_name not in pc.list_indexes().names():
+            pc.create_index(
+                name=index_name,
+                dimension=dimension,
+                metric='cosine',
+                spec=ServerlessSpec(cloud='aws', region='us-east-1')  # Free tier
+            )
+            st.success(f"Created new Pinecone index: {index_name}")
+        return pc.Index(index_name)
+    except Exception as e:
+        st.error(f"Failed to create/select index: {str(e)}")
+        st.stop()
 
 def process_excel_file(file) -> List[Dict[str, Any]]:
     """Extract text from Excel and prepare for indexing."""
@@ -124,7 +141,6 @@ def process_excel_file(file) -> List[Dict[str, Any]]:
         documents = []
         embedding_model = get_embedding_model()
         for idx, row in df.iterrows():
-            # Convert row to text chunk
             text = " ".join(str(val) for val in row.values if pd.notna(val))
             if not text.strip():
                 continue
@@ -160,13 +176,13 @@ def retrieve_documents(query: str, index, top_k: int = 3) -> List[Dict[str, Any]
             top_k=top_k,
             include_metadata=True
         )
-        return [{"id": match['id'], "content": match['metadata']['content'], "score": match['score']} for match in results['matches']]
+        return [{"id": match['id'], "content": match['metadata']['content'], "score": match['score'], "source": match['metadata']['source']} for match in results['matches']]
     except Exception as e:
         log_event("retrieval_failed", {"query": query, "error": str(e)})
         st.error(f"Failed to retrieve documents: {str(e)}")
         return []
 
-def generate_answer(query: str, documents: List[Dict[str, Any]], llm_client: OpenAI) -> str:
+def generate_answer(query: str, documents: List[Dict[str, Any]], llm_client: OpenAI, model: str) -> str:
     """Generate answer using RAG pipeline."""
     context = "\n".join([f"Source: {doc['source']}\nContent: {doc['content']}" for doc in documents])
     prompt = f"""You are an AI assistant for home care/aged care. Answer the question based on the provided Excel context. If context is insufficient, note limitations.
@@ -179,7 +195,7 @@ Answer professionally and concisely:"""
     
     try:
         response = llm_client.chat.completions.create(
-            model=llm_client.model,  # Use selected model
+            model=model,  # Use selected model directly
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=1000
@@ -195,7 +211,7 @@ def main():
     
     st.title("📊 Excel RAG Q&A Chatbot (Pinecone + OpenRouter)")
     st.markdown("Upload Excel files and ask questions. Uses free Pinecone for vector store and free OpenRouter models.")
-    st.info("**Implementation**: Pure Python for simplicity. Generated on September 14, 2025.")
+    st.info("**Implementation**: Pure Python, free tier Pinecone/OpenRouter. Generated on September 14, 2025, 10:51 AM ACST.")
     
     # Sidebar for user configuration
     with st.sidebar:
@@ -208,32 +224,24 @@ def main():
         index_name = st.text_input("Pinecone Index Name", value="excel-rag-index", help="Existing or new index name")
         if st.button("Connect to Pinecone"):
             if pinecone_api_key:
-                try:
-                    pc = get_pinecone_client(pinecone_api_key)
-                    index = create_or_select_index(pc, index_name)
-                    st.session_state[SESSION_KEYS["pinecone_index"]] = index
-                    st.success(f"Connected to Pinecone index: {index_name}")
-                except Exception as e:
-                    st.error(f"Pinecone connection failed: {str(e)}")
+                pc = get_pinecone_client(pinecone_api_key)
+                index = create_or_select_index(pc, index_name)
+                st.session_state[SESSION_KEYS["pinecone_index"]] = index
+                st.success(f"Connected to Pinecone index: {index_name}")
             else:
                 st.warning("Enter Pinecone API key first.")
         
         # OpenRouter API Key
         openrouter_api_key = st.text_input("OpenRouter API Key", type="password", help="Get from openrouter.ai")
+        if openrouter_api_key != st.session_state[SESSION_KEYS["openrouter_api_key"]]:
+            st.session_state[SESSION_KEYS["openrouter_api_key"]] = openrouter_api_key
         
         # OpenRouter Model Selection
-        selected_model = st.selectbox("Select Free Model", FREE_OPENROUTER_MODELS, help="Free tier models only")
+        selected_model = st.selectbox("Select Free Model", FREE_OPENROUTER_MODELS, index=FREE_OPENROUTER_MODELS.index(st.session_state[SESSION_KEYS["selected_model"]]), help="Free tier models only")
+        if selected_model != st.session_state[SESSION_KEYS["selected_model"]]:
+            st.session_state[SESSION_KEYS["selected_model"]] = selected_model
         
-        if st.button("Connect to OpenRouter"):
-            if openrouter_api_key:
-                try:
-                    llm_client = get_openrouter_client(openrouter_api_key, selected_model)
-                    st.success(f"Connected to OpenRouter with model: {selected_model}")
-                except Exception as e:
-                    st.error(f"OpenRouter connection failed: {str(e)}")
-            else:
-                st.warning("Enter OpenRouter API key first.")
-        
+        # File Upload
         st.header("Upload Excel Files")
         uploaded_files = st.file_uploader(
             "Upload Excel files (.xlsx, .xls)",
@@ -273,16 +281,19 @@ def main():
         st.warning("Configure Pinecone/OpenRouter and upload Excel files to start querying.")
         return
     
-    # Get configured clients (assume connected)
+    # Validate configurations
     pinecone_index = st.session_state.get(SESSION_KEYS["pinecone_index"])
     if not pinecone_index:
         st.warning("Connect to Pinecone first.")
         return
     
-    # For OpenRouter, we'll use a global client; in prod, cache per session
-    openrouter_api_key = st.session_state.get("openrouter_api_key", "")  # Store in session if needed
-    selected_model = st.session_state.get("selected_model", FREE_OPENROUTER_MODELS[0])
-    llm_client = get_openrouter_client(openrouter_api_key or st.sidebar.text_input("OpenRouter API Key (fallback)"), selected_model)
+    openrouter_api_key = st.session_state.get(SESSION_KEYS["openrouter_api_key"])
+    if not openrouter_api_key:
+        st.warning("Enter OpenRouter API key first.")
+        return
+    
+    selected_model = st.session_state.get(SESSION_KEYS["selected_model"])
+    llm_client = get_openrouter_client(openrouter_api_key)
     
     if query := st.chat_input("Ask a question about the Excel data..."):
         with st.chat_message("user"):
@@ -290,7 +301,7 @@ def main():
         
         with st.spinner("Retrieving and generating answer..."):
             documents = retrieve_documents(query, pinecone_index)
-            answer = generate_answer(query, documents, llm_client)
+            answer = generate_answer(query, documents, llm_client, selected_model)
         
         with st.chat_message("assistant"):
             st.markdown(answer)
