@@ -7,3 +7,4 @@ python-dotenv
 structlog
 torch
 openpyxl
+pypdf
